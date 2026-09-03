@@ -20,13 +20,14 @@ API_URL          = f"{BASE_NGROK_URL}/api/SafetyIncidents/camera"
 CAMERA_NAME      = "دوربین ۱ - سوله اصلی HSE"
 VIDEO_SOURCE     = "vid2.mp4"
 COOLDOWN_SECONDS = 20
+
 # ── تنظیمات دقت ─────────────────────────────────────────
 CONF_THRESHOLD   = 0.45   # حداقل اطمینان YOLO
-FALL_RATIO       = 1.5    # نسبت عرض/ارتفاع برای سقوط (بود 1.2 — کمتر false positive)
+FALL_RATIO       = 1.5    # نسبت عرض/ارتفاع برای سقوط
 FALL_SPEED       = 80     # پیکسل/ثانیه حرکت به پایین
-IMMOBILITY_SEC   = 8.0    # ثانیه بی‌حرکتی (بود 5 — کمتر false positive)
+IMMOBILITY_SEC   = 8.0    # ثانیه بی‌حرکتی (احتمال بیهوشی)
 IMMOBILITY_PIXEL = 15     # پیکسل تحمل برای بی‌حرکتی
-FIRE_MIN_PIXELS  = 4000   # حداقل پیکسل آتش (بود 2500)
+FIRE_MIN_PIXELS  = 5000   # حداقل پیکسل آتش
 COLLISION_DIST   = 100    # فاصله برخورد خودرو-کارگر
 CONFIRM_FRAMES   = 3      # تعداد فریم متوالی برای تأیید حادثه
 FALL_CONFIRM     = 2      # فریم تأیید سقوط
@@ -35,14 +36,10 @@ FALL_CONFIRM     = 2      # فریم تأیید سقوط
 # 🧠 بارگذاری مدل
 # ═══════════════════════════════════════════════════════════
 print("=" * 70)
-print("🚀 HSE Detector — نسخه بهینه با ردیابی واقعی")
+print("🚀 HSE Detector — نسخه بهینه با ردیابی واقعی و تشخیص پیشرفته آتش")
 print("=" * 70)
 
-# yolov8s دقت بهتر از yolov8n — اگر GPU دارید yolov8m بزنید
 model = YOLO("yolov8s.pt")
-
-# فعال کردن ردیابی ByteTrack داخلی YOLO
-# model = YOLO("yolov8s.pt")  ← همین مدل، با track() استفاده می‌شود
 
 cap = cv2.VideoCapture(VIDEO_SOURCE)
 fps = cap.get(cv2.CAP_PROP_FPS) or 25
@@ -53,14 +50,13 @@ print(f"🤖 مدل: yolov8s | Conf: {CONF_THRESHOLD}")
 # ─── State ───────────────────────────────────────────────
 last_alert_time       = 0
 active_incident_title = None
+prev_fire_mask        = None  # برای بررسی نوسان آتش
 
 # ردیابی با ID واقعی (ByteTrack)
-# {track_id: deque of (cx, cy, time, ratio)}
 person_history = defaultdict(lambda: deque(maxlen=30))
 
-# تأیید چند فریمی — {incident_key: count}
+# تأیید چند فریمی
 confirm_counter = defaultdict(int)
-CONFIRM_KEYS    = ["fall", "fire", "zone", "immobility", "collision", "falling_obj"]
 
 # ─── توابع کمکی ──────────────────────────────────────────
 def frame_to_b64(frame):
@@ -80,33 +76,59 @@ def update_confirm(key, detected):
     return confirm_counter[key] >= threshold
 
 def detect_fire(frame):
-    """تشخیص آتش با رنگ + حرکت"""
+    """
+    تشخیص هوشمند آتش با ترکیب YCrCb + HSV + آنالیز درخشندگی و نوسان (Flicker)
+    حذف کامل خطای تشخیص روی چوب، لباس کارگر و چراغ‌ها
+    """
+    global prev_fire_mask
+
+    # ۱. بررسی درخشندگی و شدت رنگ در فضای YCrCb
+    ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
+    Y, Cr, Cb = cv2.split(ycrcb)
+
+    # آتش واقعی درخشندگی بالا (Y>170) و تفاضل شدید Cr و Cb دارد
+    fire_mask_ycrcb = (Y > 170) & (Cr > 145) & (Cb < 115) & (Cr > Cb)
+    mask_ycrcb = (fire_mask_ycrcb * 255).astype(np.uint8)
+
+    # ۲. فیلتر مکمل HSV با Saturation و Value بالا (حذف اجسام کدر)
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    # رنگ آتش: نارنجی-قرمز
-    m1 = cv2.inRange(hsv, np.array([0,  120, 120], np.uint8), np.array([15, 255, 255], np.uint8))
-    m2 = cv2.inRange(hsv, np.array([18, 100, 100], np.uint8), np.array([35, 255, 255], np.uint8))
-    mask = cv2.bitwise_or(m1, m2)
-    # حذف نویز
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
-           cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5)))
-    pixels = cv2.countNonZero(mask)
-    return pixels > FIRE_MIN_PIXELS, pixels
+    m1 = cv2.inRange(hsv, np.array([0, 140, 180], np.uint8), np.array([25, 255, 255], np.uint8))
+    m2 = cv2.inRange(hsv, np.array([160, 140, 180], np.uint8), np.array([179, 255, 255], np.uint8))
+    mask_hsv = cv2.bitwise_or(m1, m2)
+
+    # ترکیب هر دو فیلتر
+    combined_mask = cv2.bitwise_and(mask_ycrcb, mask_hsv)
+
+    # مورفولوژی برای حذف نویز
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
+
+    current_pixels = cv2.countNonZero(combined_mask)
+
+    # ۳. آنالیز نوسان و پویایی (Flicker) — اجسام ثابت مثل جعبه یا لباس نوسان ندارند
+    is_flickering = False
+    if prev_fire_mask is not None and current_pixels > FIRE_MIN_PIXELS:
+        diff = cv2.absdiff(combined_mask, prev_fire_mask)
+        diff_pixels = cv2.countNonZero(diff)
+        
+        # میزان تغییر لبه‌های شعله نسبت به کل مساحت
+        flicker_ratio = diff_pixels / float(current_pixels)
+        if 0.10 < flicker_ratio < 0.75:
+            is_flickering = True
+
+    prev_fire_mask = combined_mask.copy()
+
+    # شرط نهایی: مساحت کافی + نوسان واقعی شعله
+    is_fire = (current_pixels > FIRE_MIN_PIXELS) and is_flickering
+    return is_fire, current_pixels
 
 def check_fall(pid, cx, cy, ratio, now):
-    """
-    تشخیص سقوط با دو شرط:
-    ۱. نسبت عرض/ارتفاع > FALL_RATIO (دراز کشیده)
-    ۲. سرعت حرکت به پایین > FALL_SPEED
-    هر دو شرط باید صدق کند
-    """
+    """تشخیص سقوط با دو شرط نسبت ابعاد + سرعت نزولی"""
     hist = person_history[pid]
     if len(hist) < 3:
         return False
 
-    # شرط ۱: نسبت
     ratio_ok = ratio > FALL_RATIO
-
-    # شرط ۲: سرعت نزولی
     old_cy, old_t = hist[-3][1], hist[-3][2]
     dt = now - old_t
     vy = (cy - old_cy) / dt if dt > 0.001 else 0
@@ -115,7 +137,7 @@ def check_fall(pid, cx, cy, ratio, now):
     return ratio_ok and speed_ok
 
 def check_immobility(pid, now):
-    """بی‌حرکتی واقعی — فقط اگر به اندازه IMMOBILITY_SEC ثابت بماند"""
+    """تشخیص بی‌حرکتی طولانی مدت"""
     hist = person_history[pid]
     if len(hist) < 10:
         return False, 0
@@ -140,6 +162,7 @@ while cap.isOpened():
         person_history.clear()
         confirm_counter.clear()
         active_incident_title = None
+        prev_fire_mask = None
         continue
 
     h, w = frame.shape[:2]
@@ -160,10 +183,9 @@ while cap.isOpened():
     cv2.polylines(frame, [danger_zone], True, (0, 0, 255), 2)
 
     # ── YOLO با ردیابی ByteTrack ──────────────────────
-    # track() به جای predict() — ID ثابت برای هر نفر
     results = model.track(
         frame,
-        persist   = True,        # ← ردیابی بین فریم‌ها
+        persist   = True,
         conf      = CONF_THRESHOLD,
         iou       = 0.5,
         tracker   = "bytetrack.yaml",
@@ -185,7 +207,6 @@ while cap.isOpened():
             bw, bh = x2-x1, y2-y1
             ratio  = bw / float(bh) if bh > 0 else 0
 
-            # Track ID — اگر ردیابی فعال باشد
             tid = int(box.id[0]) if box.id is not None else id(box)
 
             if cls == "person":
@@ -193,22 +214,20 @@ while cap.isOpened():
                     'id': tid, 'box': (x1,y1,x2,y2),
                     'center': (cx,cy), 'w': bw, 'h': bh, 'ratio': ratio
                 })
-                # ذخیره تاریخچه حرکت
                 person_history[tid].append((cx, cy, now, ratio))
 
             elif cls in ("car","truck","bus","motorcycle"):
                 vehicles.append({'box':(x1,y1,x2,y2), 'center':(cx,cy)})
 
-            # رسم روی فریم
             color = (0,255,0) if cls=="person" else (255,165,0)
             cv2.rectangle(frame, (x1,y1), (x2,y2), color, 1)
             cv2.putText(frame, f"{cls} {conf:.0%}",
                        (x1, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
     # ── تشخیص حوادث ─────────────────────────────────
-    incident = None  # (title, type, severity, key)
+    incident = None
 
-    # ── قانون ۱: سقوط (شرط ترکیبی ratio + speed) ──
+    # ── قانون ۱: سقوط ──
     fall_now = False
     for p in persons:
         if check_fall(p['id'], p['center'][0], p['center'][1], p['ratio'], now):
@@ -217,7 +236,7 @@ while cap.isOpened():
     if update_confirm("fall", fall_now):
         incident = ("حادثه: سقوط و زمین‌خوردن کارگر", "Accident", "High", "fall")
 
-    # ── قانون ۲: آتش (رنگ + مساحت + تأیید) ─────────
+    # ── قانون ۲: آتش ─────────
     if not incident:
         fire_ok, fire_px = detect_fire(frame)
         if update_confirm("fire", fire_ok):
@@ -229,7 +248,7 @@ while cap.isOpened():
         if update_confirm("zone", zone_now):
             incident = ("خطر: ورود غیرمجاز به حریم خطرناک", "Hazard", "Medium", "zone")
 
-    # ── قانون ۴: بی‌حرکتی واقعی ─────────────────────
+    # ── قانون ۴: بی‌حرکتی ─────────────────────
     if not incident:
         imm_now = False
         imm_dur = 0
@@ -245,7 +264,7 @@ while cap.isOpened():
                 "Accident", "High", "immobility"
             )
 
-    # ── قانون ۵: برخورد خودرو-کارگر ─────────────────
+    # ── قانون ۵: برخورد ─────────────────
     if not incident:
         col_now = False
         for p in persons:
@@ -282,7 +301,7 @@ while cap.isOpened():
                     last_alert_time       = now
                     active_incident_title = title
                 else:
-                    print(f"⚠️ API: {r.status_code}")
+                    print(f"⚠️ API Status Code: {r.status_code}")
             except Exception as e:
                 print(f"❌ خطا در ارسال: {e}")
     else:
