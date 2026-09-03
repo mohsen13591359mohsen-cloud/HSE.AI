@@ -14,12 +14,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ═══════════════════════════════════════════════════════════
 # ⚙️ تنظیمات
 # ═══════════════════════════════════════════════════════════
-BASE_NGROK_URL = "https://a1b2-c3d4-e5f6.ngrok-free.app"  # آدرس اختصاصی شما
+BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
 API_URL          = f"{BASE_NGROK_URL}/api/safetyincidents/camera"
 CAMERA_NAME      = "دوربین ۱ - سوله اصلی HSE"
 VIDEO_SOURCE     = "vid2.mp4"
 COOLDOWN_SECONDS = 20
-
 # ── تنظیمات دقت ─────────────────────────────────────────
 CONF_THRESHOLD   = 0.45   # حداقل اطمینان YOLO
 FALL_RATIO       = 1.5    # نسبت عرض/ارتفاع برای سقوط (بود 1.2 — کمتر false positive)

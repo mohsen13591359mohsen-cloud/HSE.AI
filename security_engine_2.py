@@ -14,15 +14,15 @@ torch.set_num_threads(2)
 
 # 🎯 نکته مهم: آدرس ngrok سیستم خود را جایگزین کنید!
 
-BASE_NGROK_URL = "https://a1b2-c3d4-e5f6.ngrok-free.app"  # آدرس اختصاصی شما
-API_URL = f"{BASE_NGROK_URL}/api/security/incidents"
+# 🎯 تنظیمات ngrok و پارامترهای پردازش تصویر
+BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
+API_URL          = f"{BASE_NGROK_URL}/api/security/incidents"
 
-VIDEO_PATH = "vid2.mp4"
-CAMERA_ID = "CAM-NORTH-03"
-LOCATION = "انبار مرکزی - دوربین ۳"
+VIDEO_PATH       = "vid2.mp4"
+CAMERA_ID        = "CAM-NORTH-03"
+LOCATION         = "انبار مرکزی - دوربین ۳"
 COOLDOWN_SECONDS = 3
-last_alarm_time = 0
-
+last_alarm_time  = 0
 app = Flask(__name__)
 CORS(app)
 

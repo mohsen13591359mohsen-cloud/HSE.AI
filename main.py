@@ -15,12 +15,12 @@ model = YOLO("yolov8n.pt")
 video_source = "vid2.mp4"
 cap = cv2.VideoCapture(video_source)
 
-# 🎯 نکته مهم: آدرس ngrok سیستم خود را جایگزین کنید!
-BASE_NGROK_URL = "https://a1b2-c3d4-e5f6.ngrok-free.app"  # آدرس اختصاصی شما
+# 🎯 تنظیمات آدرس ngrok و پارامترهای دوربین
+BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
 COOLDOWN_SECONDS = 30
-API_URL = f"{BASE_NGROK_URL}/api/violations/camera"
-CAMERA_NAME = "دوربین ۲ - خط تولید A"
-
+API_URL          = f"{BASE_NGROK_URL}/api/violations/camera"
+CAMERA_NAME      = "دوربین ۲ - خط تولید A"
+VIDEO_SOURCE     = "vid2.mp4"
 last_alert_time = 0
 is_person_in_frame = False
 
