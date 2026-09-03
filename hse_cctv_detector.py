@@ -14,7 +14,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ═══════════════════════════════════════════════════════════
 # ⚙️ تنظیمات
 # ═══════════════════════════════════════════════════════════
-BASE_NGROK_URL   = "https://a1b2-c3d4-e5f6.ngrok-free.app"
+BASE_NGROK_URL = "https://a1b2-c3d4-e5f6.ngrok-free.app"  # آدرس اختصاصی شما
 API_URL          = f"{BASE_NGROK_URL}/api/safetyincidents/camera"
 CAMERA_NAME      = "دوربین ۱ - سوله اصلی HSE"
 VIDEO_SOURCE     = "vid2.mp4"

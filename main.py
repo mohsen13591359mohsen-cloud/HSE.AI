@@ -16,7 +16,7 @@ video_source = "vid2.mp4"
 cap = cv2.VideoCapture(video_source)
 
 # 🎯 نکته مهم: آدرس ngrok سیستم خود را جایگزین کنید!
-BASE_NGROK_URL = "https://xxxx-xx-xx-xx-xx.ngrok-free.app"
+BASE_NGROK_URL = "https://a1b2-c3d4-e5f6.ngrok-free.app"  # آدرس اختصاصی شما
 COOLDOWN_SECONDS = 30
 API_URL = f"{BASE_NGROK_URL}/api/violations/camera"
 CAMERA_NAME = "دوربین ۲ - خط تولید A"
