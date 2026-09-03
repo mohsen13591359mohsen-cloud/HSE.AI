@@ -1,4 +1,3 @@
-%%writefile security_engine_2.py
 import cv2
 import requests
 import base64
