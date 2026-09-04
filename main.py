@@ -13,7 +13,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ⚙️ تنظیمات و آدرس ngrok
 # ═══════════════════════════════════════════════════════════
 BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
-API_URL          = f"{BASE_NGROK_URL}/api/violations/camera"
+
+# آدرس دقیق مطابق با Route کنترلر دات‌نت: [Route("api/[controller]")] + [HttpPost("camera")]
+API_URL          = f"{BASE_NGROK_URL}/api/Violations/camera"
 
 CAMERA_NAME      = "دوربین ۲ - خط تولید A"
 VIDEO_SOURCE     = "vid2.mp4"
@@ -22,15 +24,13 @@ CONF_THRESHOLD   = 0.50   # حداقل درصد اطمینان برای تشخی
 CONFIRM_FRAMES   = 3      # تعداد فریم متوالی جهت تأیید واقعی تخلف
 
 # ═══════════════════════════════════════════════════════════
-# 🧠 بارگذاری مدل استاندارد و آماده YOLO
+# 🧠 بارگذاری مدل استاندارد YOLO
 # ═══════════════════════════════════════════════════════════
 print("=" * 70)
 print("👝 موتور هوشمند تشخیص عدم استفاده از کلاه ایمنی (PPE) فعال شد...")
 print("=" * 70)
 
-# مدل رسمی ultralytics بدون نیاز به لینک‌های متفرقه
 model = YOLO("yolov8s.pt")
-
 cap = cv2.VideoCapture(VIDEO_SOURCE)
 
 last_alert_time     = 0
@@ -45,26 +45,21 @@ def convert_frame_to_base64(frame):
 def has_helmet(head_crop):
     """
     بررسی وجود کلاه ایمنی در ناحیه سر شخص بر اساس بازه رنگی HSV
-    کلاه‌های رایج ایمنی: زرد، سفید، قرمز، آبی، نارنجی
     """
-    if head_crop.size == 0:
-        return True # برای جلوگیری از خطای کادر خالی
+    if head_crop.size == 0 or head_crop.shape[0] == 0 or head_crop.shape[1] == 0:
+        return True
 
     hsv = cv2.cvtColor(head_crop, cv2.COLOR_BGR2HSV)
     
-    # محدوده رنگ زرد و نارنجی (کلاه‌های ایمنی رایج)
     yellow_lower = np.array([15, 100, 100])
     yellow_upper = np.array([35, 255, 255])
     
-    # محدوده رنگ سفید (کلاه‌های ایمنی مهندسی)
     white_lower = np.array([0, 0, 180])
     white_upper = np.array([180, 40, 255])
 
-    # محدوده رنگ آبی
     blue_lower = np.array([90, 80, 80])
     blue_upper = np.array([130, 255, 255])
 
-    # محدوده رنگ قرمز
     red_lower1 = np.array([0, 100, 100])
     red_upper1 = np.array([10, 255, 255])
     red_lower2 = np.array([160, 100, 100])
@@ -77,12 +72,14 @@ def has_helmet(head_crop):
 
     combined_mask = mask_yellow | mask_white | mask_blue | mask_red
     
-    # نسبت پیکسل‌های کلاه به کل ناحیه سر
-    helmet_pixel_ratio = cv2.countNonZero(combined_mask) / float(head_crop.shape[0] * head_crop.shape[1])
+    total_pixels = float(head_crop.shape[0] * head_crop.shape[1])
+    helmet_pixel_ratio = cv2.countNonZero(combined_mask) / total_pixels if total_pixels > 0 else 0
     
-    # اگر بیش از ۱۵ درصد ناحیه سر رنگ کلاه داشته باشد، کلاه دارد
     return helmet_pixel_ratio > 0.15
 
+# ═══════════════════════════════════════════════════════════
+# 🔁 حلقه اصلی پردازش ویدیو
+# ═══════════════════════════════════════════════════════════
 while cap.isOpened():
     success, frame = cap.read()
     if not success:
@@ -102,27 +99,24 @@ while cap.isOpened():
             class_name = model.names[class_id]
             conf = float(box.conf[0])
             
-            # فقط پردازش اشخاص
             if class_name == "person":
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 
-                # ۱. جدا کردن ۲۰٪ بالای کادر (محدوده سر انسان)
+                # جدا کردن ناحیه سر (۲۵٪ بالای کادر)
                 head_h = int((y2 - y1) * 0.25)
                 head_crop = frame[y1:y1 + head_h, x1:x2]
                 
-                # ۲. چک کردن کلاه
+                # بررسی کلاه
                 if not has_helmet(head_crop):
                     current_frame_has_violation = True
                     
-                    # رسم کادر قرمز دور شخص بدون کلاه
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
                     cv2.putText(frame, f"No Helmet! ({conf:.0%})", 
                                 (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 else:
-                    # رسم کادر سبز دور شخص با کلاه
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
 
-    # سیستم تأیید ۳ فریمی
+    # سیستم تأیید چند فریمی
     if current_frame_has_violation:
         confirm_counter = min(confirm_counter + 1, CONFIRM_FRAMES + 1)
     else:
@@ -131,12 +125,14 @@ while cap.isOpened():
     violation_confirmed = (confirm_counter >= CONFIRM_FRAMES)
     current_time = time.time()
 
-    # ارسال به API
+    # ارسال به API دات‌نت
     if violation_confirmed:
         if not is_violation_active and (current_time - last_alert_time > COOLDOWN_SECONDS):
             alert_name = "عدم استفاده از کلاه ایمنی در خط تولید"
             try:
                 image_base64 = convert_frame_to_base64(frame)
+                
+                # دقیقا منطبق بر CameraViolationDto در دات‌نت
                 payload = {
                     "violationType": alert_name,
                     "imageUrl": image_base64,
@@ -148,16 +144,20 @@ while cap.isOpened():
                 response = requests.post(API_URL, json=payload, verify=False, timeout=5)
                 
                 if response.status_code in [200, 201]:
-                    print(f"🎯 [{datetime.now():%H:%M:%S}] تخلف عدم کلاه ثبت شد!")
+                    print(f"🎯 [{datetime.now():%H:%M:%S}] تخلف ثبت و پیامک ارسال شد! (Response: {response.json().get('message')})")
                     last_alert_time = current_time
                     is_violation_active = True
+                elif response.status_code == 404:
+                    print(f"⚠️ خطای 404: مسیر پیدا نشد. مطمئن شوید ngrok به آدرس درست دات‌نت متصل است.")
                 elif response.status_code == 502:
                     print("⚠️ خطای 502: پروژه دات‌نت لوکال متصل نیست یا ngrok قطع است.")
                 else:
-                    print(f"⚠️ پاسخ دات‌نت: {response.status_code}")
+                    print(f"⚠️ پاسخ دات‌نت ({response.status_code}): {response.text}")
                     
+            except requests.exceptions.RequestException as e:
+                print(f"❌ خطای شبکه در ارتباط با ngrok/دات‌نت: {e}")
             except Exception as e:
-                print(f"❌ خطا در ارسال داده به API: {e}")
+                print(f"❌ خطای غیرمنتظره: {e}")
     else:
         if current_time - last_alert_time > COOLDOWN_SECONDS:
             is_violation_active = False
@@ -165,3 +165,4 @@ while cap.isOpened():
     time.sleep(0.03)
 
 cap.release()
+print("✅ پردازش به پایان رسید.")
