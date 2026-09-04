@@ -6,6 +6,7 @@ import time
 import base64
 from datetime import datetime
 import urllib3
+import os
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -13,8 +14,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ⚙️ تنظیمات و آدرس ngrok
 # ═══════════════════════════════════════════════════════════
 BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
-
-# آدرس دقیق مطابق با Route کنترلر دات‌نت: [Route("api/[controller]")] + [HttpPost("camera")]
 API_URL          = f"{BASE_NGROK_URL}/api/Violations/camera"
 
 CAMERA_NAME      = "دوربین ۲ - خط تولید A"
@@ -30,6 +29,10 @@ print("=" * 70)
 print("👝 موتور هوشمند تشخیص عدم استفاده از کلاه ایمنی (PPE) فعال شد...")
 print("=" * 70)
 
+if not os.path.exists(VIDEO_SOURCE):
+    print(f"❌ خطای حیاتی: فایل ویدیو '{VIDEO_SOURCE}' یافت نشد!")
+    exit(1)
+
 model = YOLO("yolov8s.pt")
 cap = cv2.VideoCapture(VIDEO_SOURCE)
 
@@ -37,15 +40,18 @@ last_alert_time     = 0
 is_violation_active = False
 confirm_counter     = 0
 
-def convert_frame_to_base64(frame):
-    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+def convert_frame_to_base64(frame, max_width=640):
+    # بهینه‌سازی: ریسایز تصویر جهت کاهش حجم payload و افزایش سرعت شبکه
+    h, w = frame.shape[:2]
+    if w > max_width:
+        scale = max_width / float(w)
+        frame = cv2.resize(frame, (max_width, int(h * scale)))
+        
+    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
     jpg_as_text = base64.b64encode(buffer).decode('utf-8')
     return f"data:image/jpeg;base64,{jpg_as_text}"
 
 def has_helmet(head_crop):
-    """
-    بررسی وجود کلاه ایمنی در ناحیه سر شخص بر اساس بازه رنگی HSV
-    """
     if head_crop.size == 0 or head_crop.shape[0] == 0 or head_crop.shape[1] == 0:
         return True
 
@@ -102,21 +108,17 @@ while cap.isOpened():
             if class_name == "person":
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 
-                # جدا کردن ناحیه سر (۲۵٪ بالای کادر)
                 head_h = int((y2 - y1) * 0.25)
                 head_crop = frame[y1:y1 + head_h, x1:x2]
                 
-                # بررسی کلاه
                 if not has_helmet(head_crop):
                     current_frame_has_violation = True
-                    
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
                     cv2.putText(frame, f"No Helmet! ({conf:.0%})", 
                                 (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 else:
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
 
-    # سیستم تأیید چند فریمی
     if current_frame_has_violation:
         confirm_counter = min(confirm_counter + 1, CONFIRM_FRAMES + 1)
     else:
@@ -125,14 +127,12 @@ while cap.isOpened():
     violation_confirmed = (confirm_counter >= CONFIRM_FRAMES)
     current_time = time.time()
 
-    # ارسال به API دات‌نت
     if violation_confirmed:
         if not is_violation_active and (current_time - last_alert_time > COOLDOWN_SECONDS):
             alert_name = "عدم استفاده از کلاه ایمنی در خط تولید"
             try:
                 image_base64 = convert_frame_to_base64(frame)
                 
-                # دقیقا منطبق بر CameraViolationDto در دات‌نت
                 payload = {
                     "violationType": alert_name,
                     "imageUrl": image_base64,
@@ -144,25 +144,25 @@ while cap.isOpened():
                 response = requests.post(API_URL, json=payload, verify=False, timeout=5)
                 
                 if response.status_code in [200, 201]:
-                    print(f"🎯 [{datetime.now():%H:%M:%S}] تخلف ثبت و پیامک ارسال شد! (Response: {response.json().get('message')})")
+                    msg = response.json().get('message', 'ثبت شد') if response.content else 'OK'
+                    print(f"🎯 [{datetime.now():%H:%M:%S}] تخلف ثبت شد! ({msg})")
                     last_alert_time = current_time
                     is_violation_active = True
-                elif response.status_code == 404:
-                    print(f"⚠️ خطای 404: مسیر پیدا نشد. مطمئن شوید ngrok به آدرس درست دات‌نت متصل است.")
-                elif response.status_code == 502:
-                    print("⚠️ خطای 502: پروژه دات‌نت لوکال متصل نیست یا ngrok قطع است.")
                 else:
                     print(f"⚠️ پاسخ دات‌نت ({response.status_code}): {response.text}")
+                    last_alert_time = current_time # جلوگیری از هجوم درخواست‌های ناموفق
                     
             except requests.exceptions.RequestException as e:
-                print(f"❌ خطای شبکه در ارتباط با ngrok/دات‌نت: {e}")
+                print(f"❌ خطای شبکه/ارتباط: {e}")
+                last_alert_time = current_time
             except Exception as e:
                 print(f"❌ خطای غیرمنتظره: {e}")
+                last_alert_time = current_time
     else:
         if current_time - last_alert_time > COOLDOWN_SECONDS:
             is_violation_active = False
 
-    time.sleep(0.03)
+    time.sleep(0.01)
 
 cap.release()
 print("✅ پردازش به پایان رسید.")
