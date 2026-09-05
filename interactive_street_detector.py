@@ -8,6 +8,7 @@ import json
 import os
 from datetime import datetime
 import urllib3
+from IPython.display import display, Image, clear_output
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -50,7 +51,7 @@ def load_zone_from_json():
 # 🧠 راه اندازی و شروع برنامه
 # ═══════════════════════════════════════════════════════════
 print("=" * 70)
-print("🚀 سیستم پایش حریم اختصاصی خیابان (نسخه Colab Engine)")
+print("🚀 سیستم پایش حریم اختصاصی خیابان (نسخه Colab Live Stream)")
 print("=" * 70)
 
 if not load_zone_from_json():
@@ -59,6 +60,9 @@ if not load_zone_from_json():
 model = YOLO("yolov8s.pt")
 cap = cv2.VideoCapture(VIDEO_SOURCE)
 last_alert_time = 0
+
+# ساخت Handeling اختصاصی برای استریم تصویری در Colab
+display_handle = display(None, display_id=True)
 
 def frame_to_b64(frame):
     _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -70,6 +74,8 @@ def in_zone(cx, cy, poly):
 # ═══════════════════════════════════════════════════════════
 # 🔁 حلقه اصلی پردازش
 # ═══════════════════════════════════════════════════════════
+frame_count = 0
+
 while cap.isOpened():
     ok, frame = cap.read()
     if not ok:
@@ -77,6 +83,7 @@ while cap.isOpened():
         continue
 
     now = time.time()
+    frame_count += 1
 
     # رسم محدوده حریم اختصاصی روی فریم
     overlay = frame.copy()
@@ -132,6 +139,12 @@ while cap.isOpened():
                 print(f"⚠️ پاسخ API: Status {r.status_code}")
         except Exception as e:
             print(f"❌ خطا در ارسال API: {e}")
+
+    # ── 📺 نمایش زنده در گوگل کولب ────────────────────────
+    # برای روان‌تر شدن اجرا، اندازه تصویر را کمی کوچک می‌کنیم
+    preview_frame = cv2.resize(frame, (640, 360))
+    _, jpeg = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+    display_handle.update(Image(data=jpeg.tobytes()))
 
     time.sleep(0.01)
 
