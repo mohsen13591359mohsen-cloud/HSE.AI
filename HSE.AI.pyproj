@@ -23,11 +23,13 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="hse_cctv_detector.py" />
+    <Compile Include="interactive_street_detector.py" />
     <Compile Include="main.py" />
     <Compile Include="security_engine_2.py" />
     <Compile Include="video_stream_server.py" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="streat.mp4" />
     <Content Include="vid2.mp4" />
     <Content Include="video1.mp4" />
     <Content Include="video3.mp4" />
