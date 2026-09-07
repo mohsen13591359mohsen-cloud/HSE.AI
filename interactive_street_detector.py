@@ -30,7 +30,6 @@ CLASSES_ANIMAL  = ["dog", "cat", "horse", "cow", "sheep"]
 
 danger_zone = None
 
-# ── بارگذاری حریم قبلی از فایل JSON ───────────────────────
 def load_zone_from_json():
     global danger_zone
     if os.path.exists(CONFIG_FILE):
@@ -60,9 +59,6 @@ if not load_zone_from_json():
 model = YOLO("yolov8s.pt")
 cap = cv2.VideoCapture(VIDEO_SOURCE)
 last_alert_time = 0
-
-# ساخت Handeling اختصاصی برای استریم تصویری در Colab
-display_handle = display(None, display_id=True)
 
 def frame_to_b64(frame):
     _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -141,11 +137,12 @@ while cap.isOpened():
             print(f"❌ خطا در ارسال API: {e}")
 
     # ── 📺 نمایش زنده در گوگل کولب ────────────────────────
-    # برای روان‌تر شدن اجرا، اندازه تصویر را کمی کوچک می‌کنیم
-    preview_frame = cv2.resize(frame, (640, 360))
-    _, jpeg = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
-    display_handle.update(Image(data=jpeg.tobytes()))
-
-    time.sleep(0.01)
+    # هر ۲ فریم یک‌بار تصویر به‌روزرسانی می‌شود تا خروجی بسیار روان باشد
+    if frame_count % 2 == 0:
+        preview_frame = cv2.resize(frame, (640, 360))
+        _, jpeg = cv2.imencode('.jpg', preview_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        
+        clear_output(wait=True)
+        display(Image(data=jpeg.tobytes()))
 
 cap.release()
