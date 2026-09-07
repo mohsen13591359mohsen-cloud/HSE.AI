@@ -17,7 +17,7 @@ BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
 API_URL          = f"{BASE_NGROK_URL}/api/Violations/camera"
 
 CAMERA_NAME      = "دوربین ۲ - خط تولید A"
-VIDEO_SOURCE     = "vid2.mp4"
+VIDEO_SOURCE     = "vid22.mp4"
 COOLDOWN_SECONDS = 30
 CONF_THRESHOLD   = 0.50   # حداقل درصد اطمینان برای تشخیص شخص
 CONFIRM_FRAMES   = 3      # تعداد فریم متوالی جهت تأیید واقعی تخلف

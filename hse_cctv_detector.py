@@ -17,7 +17,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
 API_URL        = f"{BASE_NGROK_URL}/api/SafetyIncidents/camera"
 CAMERA_NAME      = "دوربین ۱ - سوله اصلی HSE"
-VIDEO_SOURCE     = "vid2.mp4"
+VIDEO_SOURCE     = "vid22.mp4"
 COOLDOWN_SECONDS = 20
 
 # ── تنظیمات دقت ─────────────────────────────────────────

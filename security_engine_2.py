@@ -18,7 +18,7 @@ torch.set_num_threads(2)
 BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
 API_URL          = f"{BASE_NGROK_URL}/api/security/incidents"
 
-VIDEO_PATH       = "vid2.mp4"
+VIDEO_PATH       = "vid22.mp4"
 CAMERA_ID        = "CAM-NORTH-03"
 LOCATION         = "انبار مرکزی - دوربین ۳"
 COOLDOWN_SECONDS = 3
