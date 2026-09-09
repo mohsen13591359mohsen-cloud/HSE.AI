@@ -22,6 +22,7 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="high_fire_accidents.py" />
     <Compile Include="hse_cctv_detector.py" />
     <Compile Include="interactive_street_detector.py" />
     <Compile Include="main.py" />
