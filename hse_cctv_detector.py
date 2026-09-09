@@ -1,3 +1,7 @@
+import os
+# جلوگیری از تداخل Multi-threading در FFmpeg قبل از لود OpenCV
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "threads;1"
+
 import cv2
 import numpy as np
 import torch
@@ -12,6 +16,10 @@ from collections import defaultdict, deque
 import logging
 from queue import Queue
 from threading import Thread
+
+# غیرفعال‌سازی Multi-threading داخلی OpenCV جهت رفع خطای pthread_frame
+cv2.setNumThreads(0)
+cv2.ocl.setUseOpenCL(False)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -66,7 +74,7 @@ class FrameGrabber(Thread):
     def __init__(self, source):
         super().__init__(name="Grabber")
         self.source = source
-        self.cap = cv2.VideoCapture(source)
+        self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
         self.queue = Queue(maxsize=2)
         self.stopped = False
 
@@ -74,7 +82,7 @@ class FrameGrabber(Thread):
         while not self.stopped:
             if not self.cap.isOpened():
                 time.sleep(CONFIG["camera"]["reconnect_delay"])
-                self.cap = cv2.VideoCapture(self.source)
+                self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
                 continue
 
             ret, frame = self.cap.read()
@@ -85,8 +93,10 @@ class FrameGrabber(Thread):
                 continue
 
             if self.queue.full():
-                try: self.queue.get_nowait()
-                except: pass
+                try: 
+                    self.queue.get_nowait()
+                except Exception: 
+                    pass
             self.queue.put(frame)
 
     def stop(self):
@@ -124,7 +134,7 @@ class HSESteelEngine:
         try:
             self.fire_model = YOLO("fire_smoke_yolov8s.pt").to(self.device)
             log.info("✅ مدل اختصاصی Fire & Smoke بارگذاری شد.")
-        except:
+        except Exception:
             log.warning("⚠️ مدل fire_smoke_yolov8s.pt یافت نشد؛ مدل عمومی جایگزین شد.")
             self.fire_model = YOLO("yolov8s.pt").to(self.device)
 
@@ -204,12 +214,16 @@ class HSESteelEngine:
         fall_detected_now = False
 
         for r in pose_res:
-            if r.keypoints is None or r.boxes is None: continue
+            if r.keypoints is None or r.boxes is None: 
+                continue
             kpts_data = r.keypoints.data.cpu().numpy()
             boxes = r.boxes
 
             for idx, kpts in enumerate(kpts_data):
-                tid = int(boxes[idx].id[0]) if boxes[idx].id is not None else idx
+                if len(kpts) < 13:
+                    continue
+                
+                tid = int(boxes[idx].id[0]) if (boxes[idx].id is not None) else idx
                 x1, y1, x2, y2 = map(int, boxes[idx].xyxy[0])
                 center_pt = ((x1 + x2) // 2, (y1 + y2) // 2)
 
@@ -225,7 +239,7 @@ class HSESteelEngine:
 
                 detected_persons.append({"id": tid, "box": (x1, y1, x2, y2), "center": center_pt})
 
-                if spine_angle < CONFIG["thresholds"]["fall_spine_angle"] and spine_angle > 0:
+                if 0 < spine_angle < CONFIG["thresholds"]["fall_spine_angle"]:
                     fall_detected_now = True
                     cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 3)
                     cv2.putText(annotated, f"INC-001 FALL ({spine_angle:.0f}deg)", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
@@ -249,7 +263,8 @@ class HSESteelEngine:
         detected_loads = []
 
         for r in det_res:
-            if r.boxes is None: continue
+            if r.boxes is None: 
+                continue
             for box in r.boxes:
                 cls_id = int(box.cls[0])
                 cls_name = self.detect_model.names[cls_id].lower()
@@ -260,10 +275,10 @@ class HSESteelEngine:
                     detected_vehicles.append({"box": (bx1, by1, bx2, by2), "center": b_center, "type": cls_name})
                     cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (255, 165, 0), 2)
 
-                    # کد INC-120: خروج واگن/بوگی از ریل (در صورت زاویه غیرعادی باکس)
+                    # کد INC-120: خروج واگن/بوگی از ریل
                     if cls_name == "train":
                         w, h_box = bx2 - bx1, by2 - by1
-                        if abs(w - h_box) < 10: # انحراف هندسی بوگی
+                        if abs(w - h_box) < 10:
                             cv2.putText(annotated, "INC-120 DERAILMENT HAZARD", (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                             if self.update_confirm("derailment", True):
                                 self.dispatch_alert("INC-120", "خروج واگن/بوگی حمل شمش از ریل", "Accident", "Critical", annotated, trigger_plc=True)
@@ -287,7 +302,8 @@ class HSESteelEngine:
         fire_smoke_detected = False
 
         for r in fire_res:
-            if r.boxes is None: continue
+            if r.boxes is None: 
+                continue
             for box in r.boxes:
                 cls_name = self.fire_model.names[int(box.cls[0])].lower()
                 if cls_name in ["fire", "smoke", "flame"]:
@@ -295,7 +311,7 @@ class HSESteelEngine:
                     fx1, fy1, fx2, fy2 = map(int, box.xyxy[0])
                     cv2.rectangle(annotated, (fx1, fy1), (fx2, fy2), (0, 69, 255), 2)
                     
-                    # کد INC-121: انفجار ضایعات مرطوب در کوره (تشخیص حجم زیاد شعله ناگهانی)
+                    # کد INC-121: انفجار ضایعات مرطوب در کوره
                     if (fx2 - fx1) * (fy2 - fy1) > (frame.shape[0] * frame.shape[1] * 0.25):
                         cv2.putText(annotated, "INC-121 WET SCRAP EXPLOSION!", (fx1, fy1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                         if self.update_confirm("wet_scrap_exp", True):
@@ -307,7 +323,6 @@ class HSESteelEngine:
         # ------------------------------------------------------------------
         # 🟠 ۴. پایش حرارتی، سرخ شدن بدنه پاتیل و سرریز (کدهای INC-059 و INC-122, INC-123)
         # ------------------------------------------------------------------
-        # کد INC-122: سرخ شدن بدنه پاتیل (Red Spot)
         red_spot_pixels = np.where(thermal_data > CONFIG["thresholds"]["red_spot_temp_thresh"])
         if len(red_spot_pixels[0]) > 80:
             cv2.putText(annotated, "INC-122 RED SPOT DETECTED ON LADLE", (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
@@ -332,7 +347,7 @@ class HSESteelEngine:
             # ورود کارگر به زون‌های خطر
             for p in detected_persons:
                 if self.point_in_rect(p["center"], zone["coords"]) and zone["id"] != "ZONE_EXIT":
-                    cv2.putText(annotated, f"INC-082 DANGER ZONE ENTRY", (p["center"][0], p["center"][1] + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    cv2.putText(annotated, "INC-082 DANGER ZONE ENTRY", (p["center"][0], p["center"][1] + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                     if self.update_confirm(f"zone_{zone['id']}_{p['id']}", True):
                         self.dispatch_alert("INC-082", f"ورود غیرمجاز کارگر به {zone['name']}", "Accident", "High", annotated, trigger_plc=True)
 
@@ -361,6 +376,7 @@ if __name__ == "__main__":
     engine = HSESteelEngine()
     log.info("✅ سیستم ۱۲۶ گانه حوادث فولاد فعال شد. برای خروج 'q' را فشار دهید.")
 
+    show_gui = True
     try:
         while True:
             if grabber.queue.empty():
@@ -370,13 +386,20 @@ if __name__ == "__main__":
             frame = grabber.queue.get()
             output_frame = engine.process_frame(frame)
 
-            cv2.imshow("HSE Steel AI Engine (126 Incidents)", output_frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            if show_gui:
+                try:
+                    cv2.imshow("HSE Steel AI Engine (126 Incidents)", output_frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                except cv2.error:
+                    # عدم وجود محیط گرافیکی (Colab / Headless Server)
+                    show_gui = False
+                    log.info("ℹ️ محیط فاقد سیستم نمایش گرافیکی است. اجرای پردازش در پس‌زمینه ادامه دارد...")
 
     except KeyboardInterrupt:
         log.info("برنامه توسط کاربر متوقف شد.")
     finally:
         grabber.stop()
-        cv2.destroyAllWindows()
+        if show_gui:
+            cv2.destroyAllWindows()
         log.info("❌ سیستم خاموش شد.")
