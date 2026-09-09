@@ -52,12 +52,29 @@ class HighPrecisionAccidentEngine:
         # بارگذاری مدل Pose با دقت بالا (Medium Pose)
         self.pose_model = YOLO("yolov8m-pose.pt").to(self.device)
         
-        # بارگذاری مدل اختصاصی آتش و دود (در صورت عدم وجود، مدل پایه جایگزین می‌شود)
+        # مدیریت خودکار دانلود مدل اختصاصی آتش و دود در صورت عدم وجود
+        fire_model_path = "fire_smoke_yolov8s.pt"
+        if not os.path.exists(fire_model_path):
+            log.warning("⚠️ فایل مدل اختصاصی آتش در پوشه یافت نشد. در حال دانلود خودکار از سرور ابری...")
+            try:
+                model_url = "https://huggingface.co/fatihakturk/yolov8-fire-and-smoke-detection/resolve/main/best.pt"
+                response = requests.get(model_url, stream=True)
+                if response.status_code == 200:
+                    with open(fire_model_path, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    log.info("✅ دانلود مدل اختصاصی آتش با موفقیت انجام شد.")
+                else:
+                    log.error(f"خطا در دانلود مدل (Status Code: {response.status_code})")
+            except Exception as e:
+                log.error(f"خطا در ارتباط با سرور جهت دانلود مدل: {e}")
+
+        # بارگذاری مدل اختصاصی آتش و دود
         try:
-            self.fire_model = YOLO("fire_smoke_yolov8s.pt").to(self.device)
+            self.fire_model = YOLO(fire_model_path).to(self.device)
             log.info("✅ مدل اختصاصی Fire & Smoke بارگذاری شد.")
-        except Exception:
-            log.warning("⚠️ مدل اختصاصی آتش یافت نشد. از مدل عمومی yolov8m.pt استفاده می‌شود.")
+        except Exception as e:
+            log.warning(f"⚠️ امکان بارگذاری مدل اختصاصی وجود ندارد ({e}). از مدل عمومی yolov8m.pt استفاده می‌شود.")
             self.fire_model = YOLO("yolov8m.pt").to(self.device)
 
         # ساختار ردیابی فریم به فریم
@@ -151,10 +168,8 @@ class HighPrecisionAccidentEngine:
                 if len(hist) >= 4:
                     dt = now - hist[0][2]
                     if dt > 0:
-                        # سرعت عمودی جابه‌جایی مرکز بدن (پیکسل بر ثانیه)
                         v_y = (center_y - hist[0][0]) / dt
 
-                        # ۳ شرط همزمان برای تایید اولیه سقوط:
                         if (v_y > CONFIG["thresholds"]["fall_speed_px_sec"] and 
                             spine_angle < CONFIG["thresholds"]["spine_angle_horizon"] and 
                             aspect_ratio > CONFIG["thresholds"]["aspect_ratio_fall"]):
@@ -184,12 +199,10 @@ class HighPrecisionAccidentEngine:
                 cls_id = int(box.cls[0])
                 cls_name = self.fire_model.names[cls_id].lower()
 
-                # بررسی کلاس‌های مرتبط با آتش/دود
                 if cls_name in ["fire", "smoke", "flame"]:
                     fx1, fy1, fx2, fy2 = map(int, box.xyxy[0])
                     area = (fx2 - fx1) * (fy2 - fy1)
 
-                    # تحلیل نرخ رشد مساحت در تاریخچه
                     fire_hist = self.track_history["fire_area"]
                     fire_hist.append((area, now))
 
@@ -205,7 +218,6 @@ class HighPrecisionAccidentEngine:
                         cv2.putText(annotated, f"🔥 {cls_name.upper()} DETECTED", (fx1, fy1 - 10), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 69, 255), 2)
 
-        # ارزیابی تاییدیه چند فریمی آتش
         if fire_detected_in_frame:
             self.fire_confirm_counter += 1
         else:
@@ -214,14 +226,13 @@ class HighPrecisionAccidentEngine:
         if self.fire_confirm_counter >= CONFIG["thresholds"]["fire_confirm_frames"]:
             self.send_alert("ACC-FIRE", "کشف آتش‌سوزی یا زبانه کشیدن دود", "Critical", annotated)
 
-        # نمایش زمان و عنوان روی تصویر
         cv2.putText(annotated, f"HSE High-Precision Engine | {datetime.now().strftime('%H:%M:%S')}", 
                     (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         return annotated
 
 # ═══════════════════════════════════════════════════════════
-# 🎬 حلقه اصلی پردازش ویدیو (متقاطع برای Colab و سیستم محلی)
+# 🎬 حلقه اصلی پردازش ویدیو
 # ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
     cap = cv2.VideoCapture(CONFIG["source"])
@@ -229,7 +240,6 @@ if __name__ == "__main__":
 
     log.info("✅ سیستم هوشمند آماده به‌کار شد.")
 
-    # تشخیص محیط Colab یا Headless
     is_headless = "COLAB_GPU" in os.environ or "BUILD_PROP" in os.environ or os.environ.get("DISPLAY") is None
 
     frame_count = 0
@@ -242,7 +252,6 @@ if __name__ == "__main__":
         processed_frame = engine.process_frame(frame)
         frame_count += 1
 
-        # تنها در محیط محلی پنجره گرافیکی باز می‌شود
         if not is_headless:
             cv2.imshow("Precision Fire & Fall Detector", processed_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
