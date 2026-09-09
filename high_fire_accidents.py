@@ -23,7 +23,7 @@ cv2.ocl.setUseOpenCL(False)
 # ⚙️ تنظیمات و آستانه‌های دقیق (CONFIG)
 # ═══════════════════════════════════════════════════════════
 CONFIG = {
-    "source": "vid22.mp4",  # آدرس فایل یا استریم RTSP دوربین: "rtsp://admin:pass@192.168.1.100:554/stream1"
+    "source": "vid22.mp4",  # آدرس فایل یا استریم RTSP دوربین
     "api_url": "https://outfit-dimly-juice.ngrok-free.dev/api/SafetyIncidents/camera",
     "cooldown_sec": 15,     # زمان انتظار بین ارسال دو هشدار همسان (ثانیه)
     "thresholds": {
@@ -155,15 +155,12 @@ class HighPrecisionAccidentEngine:
                         v_y = (center_y - hist[0][0]) / dt
 
                         # ۳ شرط همزمان برای تایید اولیه سقوط:
-                        # ۱. سرعت سقوط بالا باشد.
-                        # ۲. زاویه بدن با افق بسیار کم شده باشد (بدن خوابیده روی زمین).
-                        # ۳. عرض باکس از ارتفاع آن بیشتر شده باشد (Aspect Ratio > 1.1).
                         if (v_y > CONFIG["thresholds"]["fall_speed_px_sec"] and 
                             spine_angle < CONFIG["thresholds"]["spine_angle_horizon"] and 
                             aspect_ratio > CONFIG["thresholds"]["aspect_ratio_fall"]):
                             is_fall_candidate = True
 
-                # تایید چند فریمی برای حذف هشدارهای اشتباه (مثل خم شدن برای برداشتن ابزار)
+                # تایید چند فریمی برای حذف هشدارهای اشتباه
                 if is_fall_candidate:
                     self.fall_confirm_counter[tid] += 1
                 else:
@@ -187,7 +184,7 @@ class HighPrecisionAccidentEngine:
                 cls_id = int(box.cls[0])
                 cls_name = self.fire_model.names[cls_id].lower()
 
-                # برسی کلاس‌های مرتبط با آتش/دود
+                # بررسی کلاس‌های مرتبط با آتش/دود
                 if cls_name in ["fire", "smoke", "flame"]:
                     fx1, fy1, fx2, fy2 = map(int, box.xyxy[0])
                     area = (fx2 - fx1) * (fy2 - fy1)
@@ -199,7 +196,6 @@ class HighPrecisionAccidentEngine:
                     growth_valid = True
                     if len(fire_hist) >= 3:
                         prev_area = fire_hist[0][0]
-                        # اگر مساحت حداقل ۳۰٪ رشد کرده باشد یا مساحت اولیه بزرگ باشد
                         if (area / float(prev_area + 1e-5)) < CONFIG["thresholds"]["fire_growth_rate"] and area < 1500:
                             growth_valid = False
 
@@ -225,26 +221,36 @@ class HighPrecisionAccidentEngine:
         return annotated
 
 # ═══════════════════════════════════════════════════════════
-# 🎬 حلقه اصلی پردازش ویدیو
+# 🎬 حلقه اصلی پردازش ویدیو (متقاطع برای Colab و سیستم محلی)
 # ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
     cap = cv2.VideoCapture(CONFIG["source"])
     engine = HighPrecisionAccidentEngine()
 
-    log.info("✅ سیستم هوشمند با آستانه‌های بالا آماده به‌کار شد. برای خروج 'q' را بزنید.")
+    log.info("✅ سیستم هوشمند آماده به‌کار شد.")
 
+    # تشخیص محیط Colab یا Headless
+    is_headless = "COLAB_GPU" in os.environ or "BUILD_PROP" in os.environ or os.environ.get("DISPLAY") is None
+
+    frame_count = 0
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
-            # در صورت پایان فایل ویدیو، بازخوانی مجدد
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            continue
-
-        processed_frame = engine.process_frame(frame)
-
-        cv2.imshow("Precision Fire & Fall Detector", processed_frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+            log.info("اتمام فایل ویدیو.")
             break
 
+        processed_frame = engine.process_frame(frame)
+        frame_count += 1
+
+        # تنها در محیط محلی پنجره گرافیکی باز می‌شود
+        if not is_headless:
+            cv2.imshow("Precision Fire & Fall Detector", processed_frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        else:
+            if frame_count % 100 == 0:
+                log.info(f"فریم‌های پردازش‌شده در Colab: {frame_count}")
+
     cap.release()
-    cv2.destroyAllWindows()
+    if not is_headless:
+        cv2.destroyAllWindows()
