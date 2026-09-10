@@ -1,265 +1,441 @@
 import os
-# غیرفعال‌سازی Multi-threading در FFmpeg جهت جلوگیری از کرش
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "threads;1"
+import math
+import time
+import base64
+import logging
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from threading import Lock
 
 import cv2
 import numpy as np
+import requests
 import torch
 from ultralytics import YOLO
-import requests
-import time
-import math
-import base64
-from datetime import datetime
-from collections import defaultdict, deque
-from threading import Thread
-import logging
 
-# بهینه‌سازی سرعت OpenCV
+# کاهش ریسک کرش/مصرف بالای FFmpeg و OpenCV
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "threads;1")
 cv2.setNumThreads(0)
 cv2.ocl.setUseOpenCL(False)
 
-# ═══════════════════════════════════════════════════════════
-# ⚙️ تنظیمات و آستانه‌های دقیق (CONFIG)
-# ═══════════════════════════════════════════════════════════
+
 CONFIG = {
-    "source": "vid22.mp4",  # آدرس فایل یا استریم RTSP دوربین
-    "api_url": "https://outfit-dimly-juice.ngrok-free.dev/api/SafetyIncidents/camera",
-    "cooldown_sec": 15,     # زمان انتظار بین ارسال دو هشدار همسان (ثانیه)
+    "source": os.getenv("VIDEO_SOURCE", "vid22.mp4"),
+    "api_url": os.getenv(
+        "SAFETY_API_URL",
+        "https://outfit-dimly-juice.ngrok-free.dev/api/SafetyIncidents/camera",
+    ),
+    "verify_tls": os.getenv("VERIFY_TLS", "true").lower() == "true",
+    "cooldown_sec": 15.0,
+    "request_timeout_sec": 4.0,
+    "person_history_size": 20,
+    "track_expire_sec": 5.0,
     "thresholds": {
-        "fall_speed_px_sec": 160.0,   # حداقل سرعت سقوط عمودی (پیکسل/ثانیه)
-        "spine_angle_horizon": 35.0,  # زاویه ستون فقرات با سطح افق (کمتر از ۳۵ درجه یعنی بدن افقی شده)
-        "aspect_ratio_fall": 1.1,     # نسبت عرض به ارتفاع باکس (در سقوط W/H بیشتر از ۱ می‌شود)
-        "fall_confirm_frames": 3,     # تعداد فریم متوالی جهت تایید قطعی سقوط (کاهش هشدار کاذب)
-        
-        "fire_conf": 0.45,            # آستانه اطمینان مدل آتش
-        "fire_growth_rate": 1.35,     # نرخ رشد سریع مساحت آتش/دود در ۳ فریم
-        "fire_confirm_frames": 2      # فریم‌های متوالی برای تایید آتش‌سوزی
-    }
+        # این مقدار بر حسب پیکسل در ثانیه و با FPS ویدیو محاسبه می‌شود.
+        "fall_speed_px_sec": 160.0,
+        "spine_angle_horizon": 35.0,
+        "aspect_ratio_fall": 1.10,
+        "fall_confirm_frames": 3,
+        "fall_recovery_frames": 8,
+        "pose_keypoint_conf": 0.45,
+        "fire_conf": 0.45,
+        "fire_confirm_frames": 3,
+        "fire_recovery_frames": 8,
+        "fire_history_size": 10,
+        # آتش کوچک در صورت تداوم نیز معتبر است؛ رشد شرط الزامی نیست.
+        "fire_min_area_px": 300,
+        "fire_min_area_ratio": 0.001,
+        "fire_growth_rate": 1.35,
+    },
 }
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
-log = logging.getLogger("Precision_Engine")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - [%(levelname)s] - %(message)s",
+)
+log = logging.getLogger("HSE_Engine")
 
-# ═══════════════════════════════════════════════════════════
-# 🧠 موتور هوشمند سقوط و آتش‌سوزی با دقت بالا
-# ═══════════════════════════════════════════════════════════
+
 class HighPrecisionAccidentEngine:
     def __init__(self):
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        log.info(f"⚡ اجرای موتور پردازش روی سخت‌افزار: [{self.device.upper()}]")
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        log.info("اجرای موتور روی: %s", self.device.upper())
 
-        # بارگذاری مدل Pose با دقت بالا (Medium Pose)
         self.pose_model = YOLO("yolov8m-pose.pt").to(self.device)
-        
-        # مدیریت خودکار دانلود مدل اختصاصی آتش و دود در صورت عدم وجود
-        fire_model_path = "fire_smoke_yolov8s.pt"
-        if not os.path.exists(fire_model_path):
-            log.warning("⚠️ فایل مدل اختصاصی آتش در پوشه یافت نشد. در حال دانلود خودکار از سرور ابری...")
-            try:
-                model_url = "https://huggingface.co/fatihakturk/yolov8-fire-and-smoke-detection/resolve/main/best.pt"
-                response = requests.get(model_url, stream=True)
-                if response.status_code == 200:
-                    with open(fire_model_path, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    log.info("✅ دانلود مدل اختصاصی آتش با موفقیت انجام شد.")
-                else:
-                    log.error(f"خطا در دانلود مدل (Status Code: {response.status_code})")
-            except Exception as e:
-                log.error(f"خطا در ارتباط با سرور جهت دانلود مدل: {e}")
+        self.fire_model = self._load_fire_model()
 
-        # بارگذاری مدل اختصاصی آتش و دود
-        try:
-            self.fire_model = YOLO(fire_model_path).to(self.device)
-            log.info("✅ مدل اختصاصی Fire & Smoke بارگذاری شد.")
-        except Exception as e:
-            log.warning(f"⚠️ امکان بارگذاری مدل اختصاصی وجود ندارد ({e}). از مدل عمومی yolov8m.pt استفاده می‌شود.")
-            self.fire_model = YOLO("yolov8m.pt").to(self.device)
+        # تاریخچه هر فرد جداگانه است.
+        self.person_history = defaultdict(
+            lambda: deque(maxlen=CONFIG["person_history_size"])
+        )
+        self.person_state = defaultdict(
+            lambda: {
+                "candidate_frames": 0,
+                "recovery_frames": 0,
+                "alerted": False,
+                "last_seen": 0.0,
+            }
+        )
 
-        # ساختار ردیابی فریم به فریم
-        self.track_history = defaultdict(lambda: deque(maxlen=20))
-        self.fall_confirm_counter = defaultdict(int)
-        self.fire_confirm_counter = 0
+        # تاریخچه فقط مربوط به بزرگ‌ترین ناحیه معتبر آتش در هر فریم است.
+        self.fire_history = deque(
+            maxlen=CONFIG["thresholds"]["fire_history_size"]
+        )
+        self.fire_candidate_frames = 0
+        self.fire_recovery_frames = 0
+        self.fire_alerted = False
+
         self.last_alert_time = defaultdict(float)
+        self.alert_lock = Lock()
+        self.sender = ThreadPoolExecutor(max_workers=2)
+
+    @staticmethod
+    def _load_fire_model():
+        model_path = os.getenv("FIRE_MODEL_PATH", "fire_smoke_yolov8s.pt")
+
+        if not os.path.exists(model_path):
+            model_url = os.getenv(
+                "FIRE_MODEL_URL",
+                "https://huggingface.co/fatihakturk/yolov8-fire-and-smoke-detection/resolve/main/best.pt",
+            )
+            log.warning("مدل آتش پیدا نشد؛ دانلود از سرور آغاز می‌شود.")
+            try:
+                with requests.get(
+                    model_url,
+                    stream=True,
+                    timeout=(5, 120),
+                ) as response:
+                    response.raise_for_status()
+                    with open(model_path, "wb") as output:
+                        for chunk in response.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                output.write(chunk)
+                log.info("مدل آتش با موفقیت دانلود شد: %s", model_path)
+            except Exception as exc:
+                raise RuntimeError(
+                    "مدل آتش قابل دریافت نیست؛ تشخیص آتش غیرفعال نشد و برنامه متوقف شد."
+                ) from exc
+
+        try:
+            model = YOLO(model_path)
+            log.info("مدل Fire/Smoke بارگذاری شد.")
+            return model
+        except Exception as exc:
+            raise RuntimeError(f"بارگذاری مدل آتش شکست خورد: {exc}") from exc
 
     @staticmethod
     def calculate_spine_angle(shoulder, hip):
-        """محاسبه زاویه ستون فقرات نسبت به خط افق"""
-        dx = hip[0] - shoulder[0]
-        dy = hip[1] - shoulder[1]
-        return math.degrees(math.atan2(abs(dy), abs(dx) + 1e-5))
+        dx = float(hip[0] - shoulder[0])
+        dy = float(hip[1] - shoulder[1])
+        # صفر درجه یعنی بدن افقی و ۹۰ درجه یعنی بدن عمودی.
+        return math.degrees(math.atan2(abs(dy), abs(dx) + 1e-6))
+
+    @staticmethod
+    def _mean_keypoints(kpts, first, second, min_conf):
+        """مرکز دو keypoint را فقط در صورت معتبر بودن confidence برمی‌گرداند."""
+        if kpts.shape[0] < 3:
+            return None
+        if kpts[first][2] < min_conf or kpts[second][2] < min_conf:
+            return None
+        return (
+            (float(kpts[first][0]) + float(kpts[second][0])) / 2.0,
+            (float(kpts[first][1]) + float(kpts[second][1])) / 2.0,
+        )
+
+    def _person_fall_candidate(self, history, current, fps):
+        if len(history) < 4:
+            return False
+
+        # استفاده از بازه فریمی ثابت، نه مدت زمان کند/سریع بودن inference.
+        old = history[0]
+        frame_delta = current["frame"] - old["frame"]
+        if frame_delta <= 0 or fps <= 0:
+            return False
+
+        elapsed = frame_delta / fps
+        vertical_speed = (current["center_y"] - old["center_y"]) / elapsed
+        thresholds = CONFIG["thresholds"]
+
+        # سقوط معمولاً با حرکت رو به پایین، افقی‌شدن تنه و افزایش W/H همراه است.
+        return (
+            vertical_speed >= thresholds["fall_speed_px_sec"]
+            and current["spine_angle"] <= thresholds["spine_angle_horizon"]
+            and current["aspect_ratio"] >= thresholds["aspect_ratio_fall"]
+        )
+
+    def _send_alert_request(self, code, title, severity, frame):
+        try:
+            ok, buf = cv2.imencode(
+                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
+            )
+            if not ok:
+                raise ValueError("تبدیل فریم به JPEG شکست خورد")
+
+            payload = {
+                "code": code,
+                "title": f"🚨 {title}",
+                "severity": severity,
+                "imageUrl": "data:image/jpeg;base64,"
+                + base64.b64encode(buf).decode("ascii"),
+                "incidentDate": datetime.now(timezone.utc).isoformat(),
+                "description": f"تشخیص هوشمند حادثه | کد: {code}",
+            }
+
+            response = requests.post(
+                CONFIG["api_url"],
+                json=payload,
+                timeout=CONFIG["request_timeout_sec"],
+                verify=CONFIG["verify_tls"],
+            )
+            response.raise_for_status()
+            log.warning("هشدار با موفقیت ارسال شد: %s", code)
+        except Exception as exc:
+            log.error("ارسال هشدار %s شکست خورد: %s", code, exc)
 
     def send_alert(self, code, title, severity, frame):
-        """ارسال مجزا و غیرهمگام هشدار به API جهت جلوگیری از افت FPS"""
-        if time.time() - self.last_alert_time[code] < CONFIG["cooldown_sec"]:
-            return
+        """ارسال محدودشده و غیرهمگام؛ cooldown فقط هنگام رزرو هشدار اعمال می‌شود."""
+        now = time.monotonic()
+        with self.alert_lock:
+            if now - self.last_alert_time[code] < CONFIG["cooldown_sec"]:
+                return False
+            self.last_alert_time[code] = now
 
-        self.last_alert_time[code] = time.time()
+        self.sender.submit(
+            self._send_alert_request,
+            code,
+            title,
+            severity,
+            frame.copy(),
+        )
+        return True
 
-        def _async_send():
-            try:
-                _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                b64_img = "data:image/jpeg;base64," + base64.b64encode(buf).decode()
+    def _cleanup_old_tracks(self, now):
+        expiry = CONFIG["track_expire_sec"]
+        old_ids = [
+            tid
+            for tid, state in self.person_state.items()
+            if now - state["last_seen"] > expiry
+        ]
+        for tid in old_ids:
+            self.person_state.pop(tid, None)
+            self.person_history.pop(tid, None)
 
-                payload = {
-                    "code": code,
-                    "title": f"🚨 {title}",
-                    "severity": severity,
-                    "imageUrl": b64_img,
-                    "incidentDate": datetime.now().isoformat(),
-                    "description": f"تشخیص هوشمند حادثه با دقت بالا | کد: {code}"
-                }
-                requests.post(CONFIG["api_url"], json=payload, timeout=4, verify=False)
-                log.warning(f"📡 [هشدار ارسال شد] Code: {code} | Title: {title}")
-            except Exception as e:
-                log.error(f"خطا در ارسال API: {e}")
+    def _process_people(self, frame, annotated, frame_index, fps, now):
+        results = self.pose_model.track(
+            frame,
+            persist=True,
+            tracker="bytetrack.yaml",
+            verbose=False,
+        )
+        if not results or results[0].keypoints is None or results[0].boxes is None:
+            self._cleanup_old_tracks(now)
+            return annotated
 
-        Thread(target=_async_send, daemon=True).start()
+        boxes = results[0].boxes
+        keypoints = results[0].keypoints.data.cpu().numpy()
+        min_kpt_conf = CONFIG["thresholds"]["pose_keypoint_conf"]
 
-    def process_frame(self, frame):
-        now = time.time()
-        annotated = frame.copy()
+        for i, kpts in enumerate(keypoints):
+            if kpts.shape[0] < 13 or i >= len(boxes):
+                continue
 
-        # ------------------------------------------------------------------
-        # 1️⃣ تشخیص دقیق سقوط کارگر (Fall Detection)
-        # ------------------------------------------------------------------
-        pose_res = self.pose_model.track(frame, persist=True, tracker="bytetrack.yaml", verbose=False)
+            track_id = (
+                int(boxes[i].id[0].item())
+                if boxes[i].id is not None
+                else f"untracked-{i}"
+            )
+            x1, y1, x2, y2 = map(int, boxes[i].xyxy[0].tolist())
+            width = max(1, x2 - x1)
+            height = max(1, y2 - y1)
 
-        if pose_res and pose_res[0].keypoints is not None and pose_res[0].boxes is not None:
-            boxes = pose_res[0].boxes
-            kpts_all = pose_res[0].keypoints.data.cpu().numpy()
+            shoulder = self._mean_keypoints(kpts, 5, 6, min_kpt_conf)
+            hip = self._mean_keypoints(kpts, 11, 12, min_kpt_conf)
+            if shoulder is None or hip is None:
+                continue
 
-            for i, kpts in enumerate(kpts_all):
-                if len(kpts) < 13:
-                    continue
+            current = {
+                "center_y": (y1 + y2) / 2.0,
+                "spine_angle": self.calculate_spine_angle(shoulder, hip),
+                "aspect_ratio": width / float(height),
+                "frame": frame_index,
+            }
+            history = self.person_history[track_id]
+            history.append(current)
 
-                tid = int(boxes[i].id[0]) if boxes[i].id is not None else i
-                x1, y1, x2, y2 = map(int, boxes[i].xyxy[0])
-                
-                width = x2 - x1
-                height = y2 - y1
-                aspect_ratio = width / float(height + 1e-5)
-                center_y = (y1 + y2) / 2.0
+            state = self.person_state[track_id]
+            state["last_seen"] = now
+            candidate = self._person_fall_candidate(history, current, fps)
 
-                # نقاط کلیدی شانه و لگن
-                l_shoulder, r_shoulder = kpts[5][:2], kpts[6][:2]
-                l_hip, r_hip = kpts[11][:2], kpts[12][:2]
+            if candidate:
+                state["candidate_frames"] += 1
+                state["recovery_frames"] = 0
+            else:
+                state["candidate_frames"] = max(0, state["candidate_frames"] - 1)
+                if state["alerted"]:
+                    state["recovery_frames"] += 1
+                    if state["recovery_frames"] >= CONFIG["thresholds"]["fall_recovery_frames"]:
+                        state["alerted"] = False
+                        state["recovery_frames"] = 0
 
-                # محاسبه مرکز شانه و مرکز لگن
-                if l_shoulder[0] > 0 and r_shoulder[0] > 0:
-                    shoulder_c = ((l_shoulder[0] + r_shoulder[0]) / 2, (l_shoulder[1] + r_shoulder[1]) / 2)
-                else:
-                    shoulder_c = (x1 + width / 2, y1)
+            confirmed = (
+                state["candidate_frames"]
+                >= CONFIG["thresholds"]["fall_confirm_frames"]
+            )
+            if confirmed and not state["alerted"]:
+                state["alerted"] = True
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                cv2.putText(
+                    annotated,
+                    f"FALL DETECTED ID:{track_id}",
+                    (x1, max(25, y1 - 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 255),
+                    2,
+                )
+                self.send_alert(
+                    "ACC-FALL",
+                    f"سقوط شدید کارگر کد #{track_id}",
+                    "Critical",
+                    annotated,
+                )
 
-                if l_hip[0] > 0 and r_hip[0] > 0:
-                    hip_c = ((l_hip[0] + r_hip[0]) / 2, (l_hip[1] + r_hip[1]) / 2)
-                else:
-                    hip_c = (x1 + width / 2, y2)
-
-                spine_angle = self.calculate_spine_angle(shoulder_c, hip_c)
-
-                # ذخیره موقعیت در تاریخچه
-                hist = self.track_history[f"person_{tid}"]
-                hist.append((center_y, spine_angle, now))
-
-                is_fall_candidate = False
-
-                if len(hist) >= 4:
-                    dt = now - hist[0][2]
-                    if dt > 0:
-                        v_y = (center_y - hist[0][0]) / dt
-
-                        if (v_y > CONFIG["thresholds"]["fall_speed_px_sec"] and 
-                            spine_angle < CONFIG["thresholds"]["spine_angle_horizon"] and 
-                            aspect_ratio > CONFIG["thresholds"]["aspect_ratio_fall"]):
-                            is_fall_candidate = True
-
-                # تایید چند فریمی برای حذف هشدارهای اشتباه
-                if is_fall_candidate:
-                    self.fall_confirm_counter[tid] += 1
-                else:
-                    self.fall_confirm_counter[tid] = max(0, self.fall_confirm_counter[tid] - 1)
-
-                if self.fall_confirm_counter[tid] >= CONFIG["thresholds"]["fall_confirm_frames"]:
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                    cv2.putText(annotated, f"🚨 FALL DETECTED (ID: {tid})", (x1, y1 - 12), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    
-                    self.send_alert("ACC-FALL", f"سقوط شدید کارگر کد #{tid}", "Critical", annotated)
-
-        # ------------------------------------------------------------------
-        # 2️⃣ تشخیص دقیق آتش‌سوزی و دود (Fire & Smoke Detection)
-        # ------------------------------------------------------------------
-        fire_res = self.fire_model(frame, conf=CONFIG["thresholds"]["fire_conf"], verbose=False)
-        fire_detected_in_frame = False
-
-        if fire_res and fire_res[0].boxes is not None:
-            for box in fire_res[0].boxes:
-                cls_id = int(box.cls[0])
-                cls_name = self.fire_model.names[cls_id].lower()
-
-                if cls_name in ["fire", "smoke", "flame"]:
-                    fx1, fy1, fx2, fy2 = map(int, box.xyxy[0])
-                    area = (fx2 - fx1) * (fy2 - fy1)
-
-                    fire_hist = self.track_history["fire_area"]
-                    fire_hist.append((area, now))
-
-                    growth_valid = True
-                    if len(fire_hist) >= 3:
-                        prev_area = fire_hist[0][0]
-                        if (area / float(prev_area + 1e-5)) < CONFIG["thresholds"]["fire_growth_rate"] and area < 1500:
-                            growth_valid = False
-
-                    if growth_valid:
-                        fire_detected_in_frame = True
-                        cv2.rectangle(annotated, (fx1, fy1), (fx2, fy2), (0, 69, 255), 3)
-                        cv2.putText(annotated, f"🔥 {cls_name.upper()} DETECTED", (fx1, fy1 - 10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 69, 255), 2)
-
-        if fire_detected_in_frame:
-            self.fire_confirm_counter += 1
-        else:
-            self.fire_confirm_counter = max(0, self.fire_confirm_counter - 1)
-
-        if self.fire_confirm_counter >= CONFIG["thresholds"]["fire_confirm_frames"]:
-            self.send_alert("ACC-FIRE", "کشف آتش‌سوزی یا زبانه کشیدن دود", "Critical", annotated)
-
-        cv2.putText(annotated, f"HSE High-Precision Engine | {datetime.now().strftime('%H:%M:%S')}", 
-                    (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
+        self._cleanup_old_tracks(now)
         return annotated
 
-# ═══════════════════════════════════════════════════════════
-# 🎬 حلقه اصلی پردازش ویدیو
-# ═══════════════════════════════════════════════════════════
-if __name__ == "__main__":
-    cap = cv2.VideoCapture(CONFIG["source"])
-    engine = HighPrecisionAccidentEngine()
+    def _process_fire(self, frame, annotated, now):
+        results = self.fire_model(
+            frame,
+            conf=CONFIG["thresholds"]["fire_conf"],
+            verbose=False,
+        )
+        candidates = []
+        image_area = frame.shape[0] * frame.shape[1]
 
-    log.info("✅ سیستم هوشمند آماده به‌کار شد.")
+        if results and results[0].boxes is not None:
+            names = results[0].names
+            for box in results[0].boxes:
+                cls_id = int(box.cls[0].item())
+                class_name = str(names[cls_id]).lower()
+                if class_name not in {"fire", "smoke", "flame"}:
+                    continue
 
-    is_headless = "COLAB_GPU" in os.environ or "BUILD_PROP" in os.environ or os.environ.get("DISPLAY") is None
+                fx1, fy1, fx2, fy2 = map(int, box.xyxy[0].tolist())
+                area = max(0, fx2 - fx1) * max(0, fy2 - fy1)
+                confidence = float(box.conf[0].item())
+                min_area = max(
+                    CONFIG["thresholds"]["fire_min_area_px"],
+                    image_area * CONFIG["thresholds"]["fire_min_area_ratio"],
+                )
+                if area < min_area:
+                    continue
 
-    frame_count = 0
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            log.info("اتمام فایل ویدیو.")
-            break
+                candidates.append(
+                    {
+                        "area": area,
+                        "confidence": confidence,
+                        "name": class_name,
+                        "box": (fx1, fy1, fx2, fy2),
+                    }
+                )
 
-        processed_frame = engine.process_frame(frame)
-        frame_count += 1
+        # هر فریم فقط بزرگ‌ترین ناحیه را وارد تاریخچه می‌کنیم؛ اشیای مختلف قاطی نمی‌شوند.
+        largest = max(candidates, key=lambda item: item["area"], default=None)
+        fire_in_frame = largest is not None
+        self.fire_history.append((largest["area"] if largest else 0, now))
 
-        if not is_headless:
-            cv2.imshow("Precision Fire & Fall Detector", processed_frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+        if fire_in_frame:
+            fx1, fy1, fx2, fy2 = largest["box"]
+            cv2.rectangle(annotated, (fx1, fy1), (fx2, fy2), (0, 69, 255), 3)
+            cv2.putText(
+                annotated,
+                f"{largest['name'].upper()} {largest['confidence']:.2f}",
+                (fx1, max(25, fy1 - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 69, 255),
+                2,
+            )
+            self.fire_candidate_frames += 1
+            self.fire_recovery_frames = 0
         else:
-            if frame_count % 100 == 0:
-                log.info(f"فریم‌های پردازش‌شده در Colab: {frame_count}")
+            self.fire_candidate_frames = max(0, self.fire_candidate_frames - 1)
+            if self.fire_alerted:
+                self.fire_recovery_frames += 1
+                if self.fire_recovery_frames >= CONFIG["thresholds"]["fire_recovery_frames"]:
+                    self.fire_alerted = False
+                    self.fire_recovery_frames = 0
 
-    cap.release()
-    if not is_headless:
-        cv2.destroyAllWindows()
+        confirmed = (
+            self.fire_candidate_frames
+            >= CONFIG["thresholds"]["fire_confirm_frames"]
+        )
+        if confirmed and not self.fire_alerted:
+            self.fire_alerted = True
+            self.send_alert(
+                "ACC-FIRE",
+                "کشف آتش‌سوزی یا دود",
+                "Critical",
+                annotated,
+            )
+        return annotated
+
+    def process_frame(self, frame, frame_index, fps):
+        now = time.monotonic()
+        annotated = frame.copy()
+        annotated = self._process_people(
+            frame, annotated, frame_index, fps, now
+        )
+        annotated = self._process_fire(frame, annotated, now)
+        cv2.putText(
+            annotated,
+            f"HSE Engine | frame={frame_index} | FPS={fps:.1f}",
+            (15, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+        )
+        return annotated
+
+    def shutdown(self):
+        self.sender.shutdown(wait=True)
+
+
+def main():
+    cap = cv2.VideoCapture(CONFIG["source"])
+    if not cap.isOpened():
+        raise RuntimeError(f"باز کردن منبع ویدیو شکست خورد: {CONFIG['source']}")
+
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = source_fps if source_fps and source_fps > 1 else 25.0
+    engine = HighPrecisionAccidentEngine()
+    is_headless = os.environ.get("DISPLAY") is None
+    frame_index = 0
+
+    try:
+        log.info("سیستم آماده است؛ FPS مبنا: %.2f", fps)
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_index += 1
+            processed = engine.process_frame(frame, frame_index, fps)
+
+            if not is_headless:
+                cv2.imshow("HSE Fire and Fall Detector", processed)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+            elif frame_index % 100 == 0:
+                log.info("فریم پردازش‌شده: %d", frame_index)
+    finally:
+        cap.release()
+        engine.shutdown()
+        if not is_headless:
+            cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
