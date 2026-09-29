@@ -21,7 +21,7 @@ API_URL          = f"{BASE_NGROK_URL}/api/SafetyIncidents/camera"
 CAMERA_NAME      = "دوربین ۱ - سوله اصلی HSE"
 
 # 🔴 آدرس ویدیو را مطابق مسیر درایو خود تنظیم کنید
-VIDEO_SOURCE     = "/content/drive/MyDrive/vid2.mp4" 
+VIDEO_SOURCE     = "/content/drive/MyDrive/HSEPlatform/HSE.AI/vid22.mp4" 
 COOLDOWN_SECONDS = 20
 
 # ── تنظیمات دقت ─────────────────────────────────────────
