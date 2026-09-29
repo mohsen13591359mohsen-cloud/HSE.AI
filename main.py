@@ -18,7 +18,7 @@ API_URL          = f"{BASE_NGROK_URL}/api/Violations/camera"
 
 CAMERA_NAME      = "دوربین ۲ - خط تولید A"
 
-# 🔴 حتماً مسیر درست فایل ویدیو در گوگل درایو را قرار دهید
+# 🔴 مسیر فایل ویدیو در گوگل درایو
 VIDEO_SOURCE     = "/content/drive/MyDrive/HSEPlatform/HSE.AI/lifterac.mp4" 
 
 COOLDOWN_SECONDS = 30
@@ -31,7 +31,6 @@ print("=" * 70)
 
 # ۱. بررسی وجود فایل مدل
 if not os.path.exists("best.pt"):
-    # اگر فایل در ریشه اصلی کولب است، آن را کپی کنیم
     if os.path.exists("/content/best.pt"):
         os.system("cp /content/best.pt ./best.pt")
     else:
@@ -84,6 +83,9 @@ while cap.isOpened():
     results = model(frame, conf=CONF_THRESHOLD, verbose=False)
     current_frame_has_violation = False
 
+    # ساخت کپی از فریم اصلی برای آنوتیت کردن (رسم کادر)
+    annotated_frame = frame.copy()
+
     for result in results:
         if result.boxes is None:
             continue
@@ -96,11 +98,20 @@ while cap.isOpened():
             # تشخیص عدم استفاده از کلاه ایمنی
             if class_name.lower() in ["no helmet", "no_helmet"]:
                 current_frame_has_violation = True
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(frame, f"No Helmet ({conf:.0%})", 
-                            (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                # رسم کادر قرمز ضخیم دور فرد متخلف
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                
+                # زمینه مشکی برای خوانایی بهتر متن لیبل
+                label = f"No Helmet ({conf:.0%})"
+                (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(annotated_frame, (x1, y1 - 22), (x1 + w, y1), (0, 0, 255), -1)
+                cv2.putText(annotated_frame, label, (x1, y1 - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             else:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
+                # رسم کادر سبز برای سایر موارد تشخیص داده شده
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(annotated_frame, f"{class_name} ({conf:.0%})", 
+                            (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
     # لاگ پیشرفت در ترمینال کولب
     print(f"🔄 پردازش فریم {frame_count}/{total_frames} | وضعیت تخلف: {current_frame_has_violation}", end="\r")
@@ -118,16 +129,17 @@ while cap.isOpened():
         if not is_violation_active and (current_time - last_alert_time > COOLDOWN_SECONDS):
             alert_name = "عدم استفاده از کلاه ایمنی در خط تولید"
             try:
+                # 🚀 ارسال فریم آنوتیت‌شده (دارای Bounding Box) به API
                 payload = {
                     "violationType": alert_name,
-                    "imageUrl": convert_frame_to_base64(frame),
+                    "imageUrl": convert_frame_to_base64(annotated_frame),
                     "cameraLocation": CAMERA_NAME,
                     "detectedAt": datetime.now().isoformat(),
                     "hseComment": f"شناسایی هوشمند عدم استفاده از کلاه ایمنی روی {CAMERA_NAME}"
                 }
                 response = requests.post(API_URL, json=payload, verify=False, timeout=5)
                 if response.status_code in [200, 201]:
-                    print(f"\n🎯 [{datetime.now():%H:%M:%S}] تخلف با موفقیت در API ثبت شد!")
+                    print(f"\n🎯 [{datetime.now():%H:%M:%S}] تخلف با موفقیت به همراه Bounding Box در API ثبت شد!")
                     last_alert_time = current_time
                     is_violation_active = True
                 else:
