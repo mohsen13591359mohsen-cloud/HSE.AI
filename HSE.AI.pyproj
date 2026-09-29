@@ -30,6 +30,7 @@
     <Compile Include="video_stream_server.py" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="best.pt" />
     <Content Include="streat.mp4" />
     <Content Include="vid22.mp4" />
     <Content Include="video1.mp4" />
