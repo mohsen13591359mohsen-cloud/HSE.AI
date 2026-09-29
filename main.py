@@ -19,7 +19,7 @@ API_URL          = f"{BASE_NGROK_URL}/api/Violations/camera"
 CAMERA_NAME      = "دوربین ۲ - خط تولید A"
 
 # 🔴 حتماً مسیر درست فایل ویدیو در گوگل درایو را قرار دهید
-VIDEO_SOURCE     = "/content/drive/MyDrive/lifterac.mp4" 
+VIDEO_SOURCE     = "/content/drive/MyDrive/HSEPlatform/HSE.AI/lifterac.mp4" 
 
 COOLDOWN_SECONDS = 30
 CONF_THRESHOLD   = 0.35   # آستانه اطمینان تشخیص
