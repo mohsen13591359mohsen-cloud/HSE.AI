@@ -18,7 +18,7 @@ BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
 API_URL          = f"{BASE_NGROK_URL}/api/security/incidents"
 
 # 🔴 آدرس ویدیو را روی مسیر درایو تنظیم کنید
-VIDEO_PATH       = "/content/drive/MyDrive/vid22.mp4"
+VIDEO_SOURCE     = "/content/drive/MyDrive/HSEPlatform/HSE.AI/vid22.mp4" 
 CAMERA_ID        = "CAM-NORTH-03"
 LOCATION         = "انبار مرکزی - دوربین ۳"
 COOLDOWN_SECONDS = 3
