@@ -5,6 +5,7 @@ import time
 import urllib3
 import threading
 import torch
+import os
 from flask import Flask, Response
 from flask_cors import CORS
 from ultralytics import YOLO
@@ -12,17 +13,17 @@ from ultralytics import YOLO
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 torch.set_num_threads(2)
 
-# 🎯 نکته مهم: آدرس ngrok سیستم خود را جایگزین کنید!
-
 # 🎯 تنظیمات ngrok و پارامترهای پردازش تصویر
 BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
 API_URL          = f"{BASE_NGROK_URL}/api/security/incidents"
 
-VIDEO_PATH       = "vid22.mp4"
+# 🔴 آدرس ویدیو را روی مسیر درایو تنظیم کنید
+VIDEO_PATH       = "/content/drive/MyDrive/vid22.mp4"
 CAMERA_ID        = "CAM-NORTH-03"
 LOCATION         = "انبار مرکزی - دوربین ۳"
 COOLDOWN_SECONDS = 3
 last_alarm_time  = 0
+
 app = Flask(__name__)
 CORS(app)
 
@@ -51,21 +52,26 @@ def send_alarm_to_api(frame, alarm_type):
     def _send():
         try:
             requests.post(API_URL, json=payload, verify=False, timeout=3)
-            print(f"🚨 [هشدار دزدگیر] ثبت شد: {alarm_type}")
+            print(f"\n🚨 [هشدار دزدگیر] ثبت شد: {alarm_type}")
         except Exception as e:
-            print(f"💥 خطای ارتباط با API دات‌نت: {e}")
+            print(f"\n💥 خطای ارتباط با API دات‌نت: {e}")
 
     threading.Thread(target=_send, daemon=True).start()
 
 def process_video_main():
     global global_jpeg_bytes
-    cap = cv2.VideoCapture(VIDEO_PATH)
 
-    if not cap.isOpened():
-        print(f"❌ خطای بحرانی: فایل ویدیویی '{VIDEO_PATH}' پیدا نشد!")
-        return
+    if not os.path.exists(VIDEO_PATH):
+        if os.path.exists("/content/vid22.mp4"):
+            video_src = "/content/vid22.mp4"
+        else:
+            print(f"❌ خطای بحرانی: فایل ویدیویی پیدا نشد:\n📍 {VIDEO_PATH}")
+            return
+    else:
+        video_src = VIDEO_PATH
 
-    print(f"🎬 پردازش ویدیو '{VIDEO_PATH}' در پس‌زمینه کولاب شروع شد...")
+    cap = cv2.VideoCapture(video_src)
+    print(f"🎬 پردازش ویدیو '{video_src}' در پس‌زمینه کولاب شروع شد...")
 
     frame_count = 0
     last_boxes = []
@@ -103,6 +109,7 @@ def process_video_main():
         if success:
             global_jpeg_bytes = encoded_img.tobytes()
 
+        print(f"🔄 در حال استریم دزدگیر... فریم {frame_count}", end="\r")
         time.sleep(0.03)
 
     cap.release()
