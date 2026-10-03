@@ -17,8 +17,8 @@ torch.set_num_threads(2)
 BASE_NGROK_URL   = "https://outfit-dimly-juice.ngrok-free.dev"
 API_URL          = f"{BASE_NGROK_URL}/api/security/incidents"
 
-# 🔴 آدرس ویدیو را روی مسیر درایو تنظیم کنید
-VIDEO_SOURCE     = "/content/drive/MyDrive/HSEPlatform/HSE.AI/vid22.mp4" 
+# 🔴 آدرس ویدیو را روی مسیر صحیح تنظیم کنید
+VIDEO_PATH       = "lifterac.mp4" 
 CAMERA_ID        = "CAM-NORTH-03"
 LOCATION         = "انبار مرکزی - دوربین ۳"
 COOLDOWN_SECONDS = 3
@@ -61,14 +61,19 @@ def send_alarm_to_api(frame, alarm_type):
 def process_video_main():
     global global_jpeg_bytes
 
-    if not os.path.exists(VIDEO_PATH):
-        if os.path.exists("/content/vid22.mp4"):
-            video_src = "/content/vid22.mp4"
-        else:
-            print(f"❌ خطای بحرانی: فایل ویدیویی پیدا نشد:\n📍 {VIDEO_PATH}")
-            return
-    else:
+    # بررسی مسیرهای مختلف جهت اطمینان از پیدا شدن ویدیو
+    video_src = None
+    if os.path.exists(VIDEO_PATH):
         video_src = VIDEO_PATH
+    elif os.path.exists("/content/HSE.AI/lifterac.mp4"):
+        video_src = "/content/HSE.AI/lifterac.mp4"
+    elif os.path.exists("/content/drive/MyDrive/HSEPlatform/HSE.AI/lifterac.mp4"):
+        video_src = "/content/drive/MyDrive/HSEPlatform/HSE.AI/lifterac.mp4"
+    elif os.path.exists("/content/vid22.mp4"):
+        video_src = "/content/vid22.mp4"
+    else:
+        print(f"❌ خطای بحرانی: فایل ویدیویی پیدا نشد.")
+        return
 
     cap = cv2.VideoCapture(video_src)
     print(f"🎬 پردازش ویدیو '{video_src}' در پس‌زمینه کولاب شروع شد...")
